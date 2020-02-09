@@ -172,7 +172,17 @@ function read_only_module {
 #   PL_GIT_MODIFIED: true/false
 #   PL_GIT_UNTRACKED: true/false
 function git_module {
-    local git_branch=$(git rev-parse --abbrev-ref HEAD 2> /dev/null)
+    # Example output:
+    #
+    #   ## master...origin/master [ahead 92]
+    #    M README.md
+    #   ?? ~README.md.swp
+    #
+    # For both ahead and behind:
+    #
+    #   ## ciimal...upstream/master [ahead 11, behind 1]
+    local git_status_full=$(git status --porcelain -s -b $([ "$PL_GIT_AHEAD" = true ] && echo "--ahead-behind" || echo "--no-ahead-behind" 2>/dev/null ) 2> /dev/null)
+    local git_branch=$(echo "$git_status_full" | head -n 1 | sed -r 's/## (.+?)\.{3}.*/\1/g' 2> /dev/null)
     if [ -n "$git_branch" ]; then
         local bg_color="$1"
         local fg_color="$2"
@@ -186,9 +196,9 @@ function git_module {
         fi
 
         if [ "$PL_GIT_AHEAD" = true ]; then
-            local number_behind_ahead="$(git rev-list --count --left-right '@{upstream}...HEAD' 2>/dev/null)"
-            local number_ahead="${number_behind_ahead#*	}"
-            local number_behind="${number_behind_ahead%	*}"
+            local number_behind_ahead="$(echo "$git_status_raw" | head -n 1 | sed 's/^[^[]*\[\(ahead \([0-9]\+\)\)\?\(, \)\?\(behind \([0-9]\+\)\)\?\]/\5 \2/g' 2> /dev/null)"
+            local number_ahead=${number_behind_ahead#* }
+            local number_behind=${number_behind_ahead% *}
             if [ ! "0$number_ahead" -eq 0 -o ! "0$number_behind" -eq 0 ]; then
                 if [ ! "$number_ahead" -eq 0 ]; then
                     content+="${PL_SYMBOLS[git_ahead]}$number_ahead"
@@ -199,35 +209,70 @@ function git_module {
             fi
         fi
 
+        # For paths with merge conflicts, X and Y show the modification states of each
+        # side of the merge. For paths that do not have merge conflicts, X shows the
+        # status of the index, and Y shows the status of the work tree. For untracked
+        # paths, XY are ??. Other status codes can be interpreted as follows:
+
+        # X          Y     Meaning
+        # -------------------------------------------------
+        #          [AMD]   not updated
+        # M        [ MD]   updated in index
+        # A        [ MD]   added to index
+        # D                deleted from index
+        # R        [ MD]   renamed in index
+        # C        [ MD]   copied in index
+        # [MARC]           index and work tree matches
+        # [ MARC]     M    work tree changed since index
+        # [ MARC]     D    deleted in work tree
+        # [ D]        R    renamed in work tree
+        # [ D]        C    copied in work tree
+        # -------------------------------------------------
+        # D           D    unmerged, both deleted
+        # A           U    unmerged, added by us
+        # U           D    unmerged, deleted by them
+        # U           A    unmerged, added by them
+        # D           U    unmerged, deleted by us
+        # A           A    unmerged, both added
+        # U           U    unmerged, both modified
+        # -------------------------------------------------
+        # ?           ?    untracked
+        # !           !    ignored
+        #-------------------------------------------------
+
+        # Skip branch header
+        local git_status=$(echo "$git_status_full" | tail -n +2)
+
         if [ "$PL_GIT_STAGED" = true ]; then
-            local number_staged="$(git diff --staged --name-only --diff-filter=AM 2> /dev/null | wc -l)"
+            local number_staged="$(echo "$git_status" | grep --count "^[^\? ]")"
             if [ ! "$number_staged" -eq "0" ]; then
                 content+=" ${PL_SYMBOLS[soft_separator]} ${PL_SYMBOLS[git_staged]}$number_staged"
             fi
         fi
 
         if [ "$PL_GIT_CONFLICTS" = true ]; then
-            local number_conflicts="$(git diff --name-only --diff-filter=U 2> /dev/null | wc -l)"
+            local number_conflicts="$(echo "$git_status" | grep --count -E "(DD|AU|UD|UA|DU|AA|UU)")"
             if [ ! "$number_conflicts" -eq "0" ]; then
                 content+=" ${PL_SYMBOLS[soft_separator]} ${PL_SYMBOLS[git_conflicts]}$number_conflicts"
             fi
         fi
 
         if [ "$PL_GIT_MODIFIED" = true ]; then
-            local number_modified="$(git diff --name-only --diff-filter=M 2> /dev/null | wc -l )"
+            #local number_modified="$(git diff --name-only --diff-filter=M 2> /dev/null | wc -l | tr -d [:space:])"
+            local number_modified="$(echo "$git_status" | grep --count "^ [MD]")"
             if [ ! "$number_modified" -eq "0" ]; then
                 content+=" ${PL_SYMBOLS[soft_separator]} ${PL_SYMBOLS[git_modified]}$number_modified"
             fi
         fi
 
         if [ "$PL_GIT_UNTRACKED" = true ]; then
-            local number_untracked="$(git ls-files --other --exclude-standard | wc -l)"
+            local number_untracked="$(echo "$git_status" | grep --count "??")"
             if [ ! "$number_untracked" -eq "0" ]; then
                 content+=" ${PL_SYMBOLS[soft_separator]} ${PL_SYMBOLS[git_untracked]}$number_untracked"
             fi
         fi
 
-        if [ -n "$(git status --porcelain)" ]; then
+        if [ -n "$git_status" ]; then
             if [ -n "$PL_GIT_DIRTY_FG" ]; then
                 fg_color="$PL_GIT_DIRTY_FG"
             fi
